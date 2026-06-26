@@ -1,0 +1,1188 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>탈로스 - 마지막 불씨 (prototype v0.22)</title>
+<!--
+================================================================================
+  탈로스 - 마지막 불씨  /  Talos: The Last Ember
+  2D 액션 플랫포머 프로토타입 (사이버펑크 + 그리스신화)
+  비주얼은 박스(히트박스) 기준. 스프라이트는 출시 직전 교체.
+
+  [핵심 메커니즘]
+   - 탈로스(본체) + 루스(공생 동물) 결합/분리 전투
+   - 결합 = 기본 강화 (+더블점프), 던지면 분리(약화) + 동물 변신
+   - 동물 4종: 다람쥐 / 늑대 / 황소 / 새
+
+  ────────────────────────────────────────────────────────────────────────────
+  [변경 이력]
+  ┌─────────┬────────────┬──────────────────────────────────────────────────┐
+  │ 버전    │ 날짜       │ 변경 내용                                          │
+  ├─────────┼────────────┼──────────────────────────────────────────────────┤
+  │ v0.19   │ 이전       │ 이동(2.4)/점프(체공)/펀치 3방향/동물 4종/           │
+  │         │            │ 불꽃난무(Shift)/루스 던지기·복귀                    │
+  │ v0.20   │ 2026-06-26 │ 플레이어 체력+피격, 공격하는 적, HUD/리스폰          │
+  │ v0.21   │ 2026-06-26 │ 대장간 폐허 첫 구간(카메라 스크롤: 시작→점프→         │
+  │         │            │ 던지기→아레나→보스방), 첫 보스 브론테스 3페이즈      │
+  │         │            │ (외눈/용광로 약점, 망치·갈고리·낙뢰·돌진·노바)        │
+  │ v0.22   │ 2026-06-26 │ [v0.19 감각 이식] 점프 분리중력(상승0.38/하강0.60·     │
+  │         │            │ 가변컷), 루스 던지기 전면 개편: 포물선 투척 +        │
+  │         │            │ 동물별 행동(다람쥐 도트/늑대 다단/황소 돌진/새 선회)  │
+  │         │            │ + K로 동물 순환 + 던진 뒤 걸어서 복귀                │
+  └─────────┴────────────┴──────────────────────────────────────────────────┘
+  ────────────────────────────────────────────────────────────────────────────
+
+  [조작]
+   - 이동:      ← → 또는 A / D
+   - 점프:      Space / ↑ / W   (결합 상태에서만 더블점프, 길게 누르면 더 높이)
+   - 펀치:      J            (↑/↓ 동시 입력 시 상/하 펀치, 기본 전방)
+   - 불꽃난무:  Shift
+   - 루스 던지기: K   (던질 때마다 동물 순환: 다람쥐→늑대→황소→새)
+                      던지면 분리(약화·더블점프 불가), 임무 끝나면 걸어서 복귀
+                      분리 중 K 다시 누르면 즉시 복귀 호출
+   - 동물 즉시지정: 1 다람쥐 / 2 늑대 / 3 황소 / 4 새 (다음 던질 동물)
+   - 리스폰:    R (게임오버 시)
+
+  [루스 동물별 행동 — v0.19 이식]
+   - 다람쥐: 포물선 투척 → 적중 시 빠른 도트딜 후 복귀
+   - 늑대:   포물선 투척(날며 커짐) → 적중 시 다단히트
+   - 황소:   앞 지면에 변신 → 직선 돌진(강한 한 방)
+   - 새:     적 위로 날아가 선회하며 주기적 급강하 도트
+
+  [브론테스 공략 메모]
+   - 외눈(머리·고지대): 충전/돌진 직전 붉게 빛날 때 → 루스 분리 던지기로 명중
+   - 가슴 용광로: 망치 지면강타 직후 경직 시 개방 → 근접 펀치/불꽃난무
+   - 그 외 장갑부는 피해 격감(클랭) → 약점을 노려야 함
+================================================================================
+-->
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #0a0e16; color: #c8d2e0;
+    font-family: "Segoe UI", system-ui, sans-serif;
+    overflow: hidden;
+  }
+  #wrap {
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; height: 100vh; gap: 10px;
+  }
+  canvas {
+    background: #0e1118;
+    border: 1px solid #2a3550;
+    box-shadow: 0 0 40px rgba(255,120,40,0.12);
+    image-rendering: pixelated;
+  }
+  #help {
+    font-size: 12px; color: #6b7a96; max-width: 960px; text-align: center;
+    line-height: 1.6;
+  }
+  #help b { color: #9fb3d6; }
+  .key { color: #ffb347; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="960" height="540"></canvas>
+  <div id="help">
+    <b>탈로스 - 마지막 불씨</b> v0.21 · 대장간 폐허 &nbsp;|&nbsp;
+    이동 <span class="key">← →</span> ·
+    점프 <span class="key">Space/↑</span> ·
+    펀치 <span class="key">J</span> ·
+    불꽃난무 <span class="key">Shift</span> ·
+    루스 던지기 <span class="key">K</span> ·
+    동물 <span class="key">1·2·3·4</span> ·
+    리스폰 <span class="key">R</span>
+  </div>
+</div>
+<script>
+"use strict";
+(function () {
+  // ==========================================================================
+  // 0. 캔버스 / 전역
+  // ==========================================================================
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width;        // 화면(뷰포트) 폭
+  const H = canvas.height;
+
+  const GRAVITY = 0.6;           // 적/보스/투사체용 기본 중력
+  // [v0.19 이식] 점프 감각용 분리 중력 — 상승은 둥실, 하강은 묵직
+  const GRAVITY_UP = 0.38;
+  const GRAVITY_DOWN = 0.60;
+  const JUMP_POWER = 11.0;       // 점프 힘
+  const JUMP_CUT = 0.45;         // 점프 키 일찍 떼면 상승 컷(가변 점프)
+  const THROW_GRAV = 0.5;        // 루스 포물선 중력
+  const WORLD_W = 3500;          // 레벨 전체 폭 (가로 스크롤)
+  const GROUND_Y = H - 60;
+
+  const camera = { x: 0 };
+
+  // ==========================================================================
+  // 1. 입력
+  // ==========================================================================
+  const keys = Object.create(null);
+  const pressed = Object.create(null);
+
+  const KEYMAP = {
+    "ArrowLeft": "left", "KeyA": "left",
+    "ArrowRight": "right", "KeyD": "right",
+    "ArrowUp": "up", "KeyW": "up",
+    "ArrowDown": "down", "KeyS": "down",
+    "Space": "jump",
+    "KeyJ": "punch",
+    "ShiftLeft": "flame", "ShiftRight": "flame",
+    "KeyK": "throw",
+    "Digit1": "anim1", "Digit2": "anim2", "Digit3": "anim3", "Digit4": "anim4",
+    "KeyR": "respawn",
+  };
+  window.addEventListener("keydown", (e) => {
+    const a = KEYMAP[e.code];
+    if (a) { if (!keys[a]) pressed[a] = true; keys[a] = true; e.preventDefault(); }
+  });
+  window.addEventListener("keyup", (e) => {
+    const a = KEYMAP[e.code];
+    if (a) { keys[a] = false; e.preventDefault(); }
+  });
+  function consume(action) {
+    if (pressed[action]) { pressed[action] = false; return true; }
+    return false;
+  }
+
+  // ==========================================================================
+  // 2. 레벨 — 대장간 폐허 수직 슬라이스
+  //    구간: 시작 → 점프 → 던지기 → 아레나 → 보스방
+  // ==========================================================================
+  // 바닥(구덩이 포함) + 발판들. x는 월드 좌표.
+  const platforms = [
+    // 시작 구간 바닥
+    { x: 0,    y: GROUND_Y, w: 620,  h: 60 },
+    // (구덩이 620~760 = 점프 구간 진입 낙하 위험)
+    // 점프 구간 발판
+    { x: 760,  y: GROUND_Y, w: 1100, h: 60 },
+    { x: 820,  y: 420,      w: 120,  h: 16 },
+    { x: 1000, y: 350,      w: 120,  h: 16 },
+    { x: 1180, y: 300,      w: 120,  h: 16 },  // 더블점프 요구 높이
+    { x: 1360, y: 380,      w: 120,  h: 16 },
+    // 던지기 구간 (오염 결정이 길을 막음 — 높은 위치)
+    { x: 1560, y: 300,      w: 90,   h: 16 },
+    // 아레나 바닥
+    { x: 1860, y: GROUND_Y, w: 780,  h: 60 },
+    { x: 2050, y: 400,      w: 140,  h: 16 },
+    { x: 2350, y: 380,      w: 140,  h: 16 },
+    // 보스방 바닥
+    { x: 2640, y: GROUND_Y, w: 860,  h: 60 },
+    { x: 2720, y: 410,      w: 110,  h: 16 },  // 모루(발판) 좌
+    { x: 3260, y: 410,      w: 110,  h: 16 },  // 모루(발판) 우
+  ];
+
+  // 진행 게이트(조건 충족 시 사라지는 벽)
+  const gates = {
+    crystalGate: { x: 1700, y: 200, w: 26, h: GROUND_Y - 200, open: false }, // 던지기 구간 차단벽
+    bossGate:    { x: 2620, y: 120, w: 26, h: GROUND_Y - 120, open: false, armed: false }, // 보스방 입장 봉쇄
+  };
+
+  // 오염 결정 (루스 던지기로 파괴 → crystalGate 열림). 높이 때문에 던지기 유도.
+  const crystal = { x: 1565, y: 250, w: 50, h: 50, hp: 40, maxHp: 40, dead: false };
+
+  // 환경 해저드: 용암 균열 (바닥의 주기적 화염 분출)
+  const lavaCracks = [
+    { x: 1980, y: GROUND_Y, w: 60, t: 0 },
+    { x: 2480, y: GROUND_Y, w: 60, t: 40 },
+  ];
+
+  // 체크포인트 x (낙사/리스폰 복귀)
+  let checkpointX = 80;
+
+  // ==========================================================================
+  // 3. 동물 4종 (루스 분리 형태)
+  // ==========================================================================
+  const ANIMALS = {
+    squirrel: { name: "다람쥐", color: "#d39a5a", w: 18, h: 16, speed: 11, dmg: 8,  life: 75, gravity: 0.15 },
+    wolf:     { name: "늑대",   color: "#9aa6b8", w: 30, h: 20, speed: 8,  dmg: 16, life: 70, gravity: 0.0  },
+    bull:     { name: "황소",   color: "#b06a4a", w: 36, h: 28, speed: 6,  dmg: 24, life: 85, gravity: 0.0  },
+    bird:     { name: "새",     color: "#6ec6e0", w: 22, h: 16, speed: 13, dmg: 10, life: 95, gravity: -0.04 },
+  };
+  const ANIMAL_ORDER = ["squirrel", "wolf", "bull", "bird"];
+  let frame = 0;   // 전역 프레임 카운터 (Date.now 대체)
+
+  // ==========================================================================
+  // 4. 플레이어(탈로스) + 루스
+  // ==========================================================================
+  const player = {
+    x: 80, y: GROUND_Y - 48, w: 30, h: 48,
+    vx: 0, vy: 0, facing: 1, onGround: false,
+    jumpsUsed: 0, jumpHeld: false,
+    hp: 120, maxHp: 120, invuln: 0, hurtFlash: 0, dead: false,
+    combined: true, selectedAnimal: "wolf",
+    punch: null, flame: 0,
+  };
+  let loose = null;
+
+  // ==========================================================================
+  // 5. 일반 적 (아레나) — v0.20 AI 재사용
+  // ==========================================================================
+  let enemies = [];
+  function makeEnemy(x, y) {
+    return {
+      x, y, w: 34, h: 44, vx: 0, vy: 0, facing: -1, onGround: false,
+      hp: 40, maxHp: 40, state: "patrol", patrolDir: -1, patrolOrigin: x,
+      attackCooldown: 0, attackWindup: 0, hitDone: false, hurt: 0, flash: 0,
+      dead: false, deadTimer: 0,
+    };
+  }
+  function spawnArenaEnemies() {
+    enemies = [
+      makeEnemy(2000, GROUND_Y - 44),
+      makeEnemy(2250, GROUND_Y - 44),
+      makeEnemy(2450, GROUND_Y - 44),
+    ];
+  }
+
+  // ==========================================================================
+  // 6. 브론테스 보스
+  // ==========================================================================
+  let boss = null;
+  let bossActive = false;
+  function spawnBoss() {
+    boss = {
+      x: 3120, y: GROUND_Y - 170, w: 120, h: 170,
+      vx: 0, vy: 0, facing: -1,
+      hp: 560, maxHp: 560,
+      phase: 1,
+      state: "intro", timer: 90, cooldown: 0,
+      eyeGlow: 0,        // >0 이면 외눈 약점 노출(충전)
+      furnaceOpen: 0,    // >0 이면 가슴 용광로 약점 개방
+      hitFlash: 0,
+      hurtThisWindow: false,
+      contactCd: 0,
+      shockwaves: [],    // 망치 충격파
+      lightnings: [],    // 낙뢰 {x, t, struck}
+      nova: 0,           // 용광로 노바 진행
+      dead: false, deadTimer: 0,
+    };
+  }
+
+  // 보스 약점 박스 (월드 좌표)
+  function bossEyeBox() {
+    if (!boss) return null;
+    return { x: boss.x + (boss.facing > 0 ? 78 : 16), y: boss.y + 8, w: 26, h: 24 };
+  }
+  function bossFurnaceBox() {
+    if (!boss) return null;
+    return { x: boss.x + 38, y: boss.y + 60, w: 44, h: 44 };
+  }
+
+  // ==========================================================================
+  // 7. 충돌 유틸
+  // ==========================================================================
+  function aabb(a, b) {
+    return a.x < b.x + b.w && a.x + a.w > b.x &&
+           a.y < b.y + b.h && a.y + a.h > b.y;
+  }
+  function solidsForPhysics() {
+    const arr = platforms.slice();
+    if (!gates.crystalGate.open) arr.push(gates.crystalGate);
+    if (gates.bossGate.armed && !gates.bossGate.open) arr.push(gates.bossGate);
+    if (!crystal.dead) arr.push(crystal); // 결정도 단단한 벽
+    return arr;
+  }
+  function resolvePlatforms(e, solids) {
+    e.onGround = false;
+    e.x += e.vx;
+    for (const p of solids) {
+      if (aabb(e, p)) {
+        if (e.vx > 0) e.x = p.x - e.w;
+        else if (e.vx < 0) e.x = p.x + p.w;
+        e.vx = 0;
+      }
+    }
+    e.y += e.vy;
+    for (const p of solids) {
+      if (aabb(e, p)) {
+        if (e.vy > 0) { e.y = p.y - e.h; e.onGround = true; }
+        else if (e.vy < 0) { e.y = p.y + p.h; }
+        e.vy = 0;
+      }
+    }
+    if (e.x < 0) e.x = 0;
+    if (e.x + e.w > WORLD_W) e.x = WORLD_W - e.w;
+    return e.onGround;
+  }
+
+  // ==========================================================================
+  // 8. 플레이어 업데이트
+  // ==========================================================================
+  const MOVE_SPEED = 2.4, MOVE_SPEED_WEAK = 1.7;
+
+  function updatePlayer() {
+    if (player.dead) { if (consume("respawn")) respawnPlayer(); return; }
+
+    if (consume("anim1")) player.selectedAnimal = "squirrel";
+    if (consume("anim2")) player.selectedAnimal = "wolf";
+    if (consume("anim3")) player.selectedAnimal = "bull";
+    if (consume("anim4")) player.selectedAnimal = "bird";
+
+    const weak = !player.combined;
+    const spd = weak ? MOVE_SPEED_WEAK : MOVE_SPEED;
+
+    let move = 0;
+    if (keys.left) move -= 1;
+    if (keys.right) move += 1;
+    if (move !== 0) { player.vx = move * spd; player.facing = move; }
+    else player.vx = 0;
+
+    // 더블점프는 결합 시에만. 공중 점프(=더블) 판정.
+    const maxJumps = player.combined ? 2 : 1;
+    if (consume("jump") || consume("up")) {
+      const isDouble = !player.onGround;
+      if (player.jumpsUsed < maxJumps && (!isDouble || player.combined)) {
+        player.vy = -JUMP_POWER; player.jumpsUsed++; player.jumpHeld = true; player.onGround = false;
+      }
+    }
+    // 가변 점프: 점프 키 떼면 상승 컷
+    if (player.jumpHeld && !(keys.jump || keys.up) && player.vy < 0) {
+      player.vy *= JUMP_CUT; player.jumpHeld = false;
+    }
+
+    // [v0.19 이식] 분리 중력 — 상승은 둥실(0.38), 하강은 묵직(0.60)
+    player.vy += player.vy < 0 ? GRAVITY_UP : GRAVITY_DOWN;
+    if (player.vy > 16) player.vy = 16;
+
+    if (consume("punch") && !player.punch) {
+      let dir = "fwd";
+      if (keys.up) dir = "up";
+      else if (keys.down) dir = "down";
+      player.punch = { dir, t: 0, hitDone: false };
+    }
+    if (player.punch) { player.punch.t++; if (player.punch.t > 14) player.punch = null; }
+
+    if (consume("flame") && player.flame <= 0) player.flame = 36;
+    if (player.flame > 0) player.flame--;
+
+    if (consume("throw")) { if (player.combined) throwLoose(); else recallLoose(); }
+
+    const solids = solidsForPhysics();
+    const wasOnGround = player.onGround;
+    resolvePlatforms(player, solids);
+    if (player.onGround && !wasOnGround) player.jumpsUsed = 0;
+    if (player.onGround) {
+      player.jumpsUsed = 0;
+      // 체크포인트 갱신 (안전한 땅 위)
+      if (player.x > checkpointX + 40) checkpointX = player.x;
+    }
+
+    if (player.invuln > 0) player.invuln--;
+    if (player.hurtFlash > 0) player.hurtFlash--;
+
+    // 낙사 (구덩이로 떨어짐)
+    if (player.y > H + 80) {
+      hurtPlayer(15, 0);
+      if (!player.dead) {
+        player.x = checkpointX; player.y = GROUND_Y - 60; player.vx = 0; player.vy = 0;
+      }
+    }
+
+    // 보스방 진입 → 게이트 봉쇄 + 보스 활성
+    if (!bossActive && player.x > 2660) {
+      bossActive = true;
+      gates.bossGate.armed = true;
+      if (!boss) spawnBoss();
+    }
+  }
+
+  // [v0.19 이식] 던질 대상(가장 가까운 적/보스/결정) — 정면 우선
+  function looseTarget() {
+    const ox = player.x + player.w / 2, oy = player.y + player.h / 2;
+    let best = null, bestD = Infinity;
+    const consider = (cx, cy) => {
+      if (Math.sign(cx - ox) !== player.facing && Math.abs(cx - ox) > 40) return;
+      const d = Math.hypot(cx - ox, cy - oy);
+      if (d < bestD && d < 720) { bestD = d; best = { x: cx, y: cy }; }
+    };
+    for (const en of enemies) if (!en.dead) consider(en.x + en.w / 2, en.y + en.h / 2);
+    if (boss && !boss.dead) consider(boss.x + boss.w / 2, boss.y + boss.h * 0.4);
+    if (!crystal.dead) consider(crystal.x + crystal.w / 2, crystal.y + crystal.h / 2);
+    return best || { x: ox + player.facing * 260, y: oy };
+  }
+  function nearestEntityTo(x, y) {
+    let best = null, bestD = Infinity;
+    const consider = (ent, type, cx, cy) => {
+      const d = Math.hypot(cx - x, cy - y);
+      if (d < bestD) { bestD = d; best = { ent, type }; }
+    };
+    for (const en of enemies) if (!en.dead) consider(en, "enemy", en.x + en.w / 2, en.y + en.h / 2);
+    if (boss && !boss.dead) consider(boss, "boss", boss.x + boss.w / 2, boss.y + boss.h * 0.4);
+    if (!crystal.dead) consider(crystal, "crystal", crystal.x + crystal.w / 2, crystal.y + crystal.h / 2);
+    return best;
+  }
+
+  // 루스 좌표(L.x,L.y)는 v0.22부터 '중심' 기준
+  function throwLoose() {
+    const key = player.selectedAnimal;
+    player.combined = false;
+    const sx = player.x + player.w / 2 + player.facing * 16;
+    const sy = player.y + 18;
+    const L = {
+      kind: key, x: sx, y: sy, vx: 0, vy: 0, grav: THROW_GRAV,
+      morph: (key === "squirrel" ? 1 : 0), face: player.facing,
+      state: "flying", actT: 0, dotCd: 0, chargeT: 0, hit: false,
+      circleT: 0, cAng: 0, diveCd: 0, ang: 0, target: null, targetType: null,
+      hitSet: new Set(),
+    };
+    const tgt = looseTarget();
+    if (key === "bull") {
+      // 황소: 앞 지면에 나타나 제자리 변신 → 돌진
+      L.x = player.x + player.w / 2 + player.facing * 26; L.y = GROUND_Y; L.state = "morph"; L.morph = 0;
+    } else if (key === "bird") {
+      // 새: 적 위쪽으로 포물선
+      const t = 24, g = 0.18, dx = tgt.x - L.x, dy = (tgt.y - 60) - L.y;
+      L.grav = g; L.vx = dx / t; L.vy = (dy - 0.5 * g * t * t) / t;
+    } else {
+      // 다람쥐/늑대: 적 방향 포물선
+      const t = (key === "wolf" ? 28 : 22), g = THROW_GRAV, dx = tgt.x - L.x, dy = tgt.y - L.y;
+      L.grav = g; L.vx = dx / t; L.vy = (dy - 0.5 * g * t * t) / t;
+    }
+    loose = L;
+    // 던질 때마다 다음 동물로 순환
+    player.selectedAnimal = ANIMAL_ORDER[(ANIMAL_ORDER.indexOf(key) + 1) % ANIMAL_ORDER.length];
+  }
+  function recallLoose() {
+    if (!loose) return;
+    if (loose.state !== "walking") { loose.state = "falling"; loose.vy = -2; }
+  }
+  function startCircle(L) {
+    const t = nearestEntityTo(L.x, L.y);
+    if (!t) { L.state = "falling"; return; }
+    L.target = t.ent; L.targetType = t.type;
+    L.state = "circle"; L.circleT = 90; L.diveCd = 8; L.cAng = 0;
+  }
+  // 지속 도트(넉백 없음 — 대상에 달라붙어 깎음)
+  function applyLooseDot(ent, type, dmg) {
+    if (type === "enemy") { ent.hp -= dmg; ent.flash = 4; if (ent.hp <= 0) { ent.hp = 0; ent.dead = true; } }
+    else if (type === "crystal") { crystal.hp -= dmg; if (crystal.hp <= 0) { crystal.dead = true; gates.crystalGate.open = true; } }
+    else if (type === "boss") { damageBoss(dmg * 0.4, "armor"); }
+  }
+
+  // ==========================================================================
+  // 9. 루스(분리체) 업데이트
+  // ==========================================================================
+  // 루스 현재 충돌 박스(중심·morph 반영)
+  function looseBox(L) {
+    const a = ANIMALS[L.kind];
+    const sc = Math.max(0.5, L.morph);
+    const hw = (a.w * sc) / 2 + 4, hh = (a.h * sc) / 2 + 4;
+    return { x: L.x - hw, y: L.y - hh, w: hw * 2, h: hh * 2 };
+  }
+  // 비행 중 충돌 처리(다람쥐/늑대=달라붙기, 보스=약점, 결정=파괴). 전환 시 true
+  function looseFlyHit(L, a) {
+    const box = looseBox(L);
+    for (const en of enemies) {
+      if (en.dead) continue;
+      if (aabb(box, en)) {
+        if (L.kind === "squirrel" || L.kind === "wolf") {
+          L.target = en; L.targetType = "enemy"; L.state = "act";
+          L.actT = (L.kind === "wolf" ? 32 : 90); L.dotCd = 0;
+        } else { damageEnemy(en, a.dmg, L.face); L.state = "falling"; L.vy = -3; L.vx = -L.face * 2; }
+        return true;
+      }
+    }
+    if (boss && !boss.dead && aabb(box, boss)) {
+      const eye = bossEyeBox(), fur = bossFurnaceBox();
+      if (boss.eyeGlow > 0 && eye && aabb(box, eye)) damageBoss(a.dmg * 3, "eye");
+      else if (boss.furnaceOpen > 0 && fur && aabb(box, fur)) damageBoss(a.dmg * 2.5, "furnace");
+      else damageBoss(a.dmg * 0.3, "armor");
+      L.state = "falling"; L.vy = -3; L.vx = -L.face * 2;
+      return true;
+    }
+    if (!crystal.dead && aabb(box, crystal)) {
+      if (L.kind === "squirrel" || L.kind === "wolf") {
+        L.target = crystal; L.targetType = "crystal"; L.state = "act";
+        L.actT = (L.kind === "wolf" ? 32 : 90); L.dotCd = 0;
+      } else {
+        crystal.hp -= a.dmg; if (crystal.hp <= 0) { crystal.dead = true; gates.crystalGate.open = true; }
+        L.state = "falling"; L.vy = -3; L.vx = -L.face * 2;
+      }
+      return true;
+    }
+    return false;
+  }
+  // 황소 돌진 광역 타격(한 대상 1회)
+  function looseMeleeHit(L, box, dmg) {
+    for (const en of enemies) {
+      if (!en.dead && !L.hitSet.has(en) && aabb(box, en)) { L.hitSet.add(en); damageEnemy(en, dmg, L.face); }
+    }
+    if (boss && !boss.dead && !L.hitSet.has(boss) && aabb(box, boss)) {
+      L.hitSet.add(boss);
+      const fur = bossFurnaceBox();
+      if (boss.furnaceOpen > 0 && fur && aabb(box, fur)) damageBoss(dmg * 2, "furnace");
+      else damageBoss(dmg * 0.5, "armor");
+    }
+    if (!crystal.dead && !L.hitSet.has(crystal) && aabb(box, crystal)) {
+      L.hitSet.add(crystal); crystal.hp -= dmg;
+      if (crystal.hp <= 0) { crystal.dead = true; gates.crystalGate.open = true; }
+    }
+  }
+
+  function updateLoose() {
+    if (!loose) return;
+    const L = loose, a = ANIMALS[L.kind];
+    const GR = GROUND_Y - 6;
+    switch (L.state) {
+      case "flying": {
+        L.x += L.vx; L.vy += L.grav; L.y += L.vy;
+        L.ang = Math.atan2(L.vy, L.vx);
+        if (L.kind === "wolf") L.morph = Math.min(1, L.morph + 0.035);
+        if (L.kind === "bird") {
+          L.morph = Math.min(1, L.morph + 0.09);
+          if (L.vy >= 0) { startCircle(L); break; }   // 정점 지나면 선회
+        }
+        if (looseFlyHit(L, a)) break;
+        if (L.y >= GR) { L.y = GR; L.state = "walking"; }
+        else if (L.x < 0 || L.x > WORLD_W) L.state = "falling";
+        break;
+      }
+      case "morph": {   // 황소 변신(~50f)
+        L.y = GROUND_Y; L.morph = Math.min(1, L.morph + 0.02);
+        if (L.morph >= 1) { L.state = "charge"; L.vx = L.face * 9; L.chargeT = 50; L.hit = false; }
+        break;
+      }
+      case "charge": {  // 황소 지상 돌진
+        L.x += L.vx; L.y = GROUND_Y; L.chargeT--;
+        looseMeleeHit(L, { x: L.x - 22, y: GROUND_Y - 30, w: 44, h: 30 }, a.dmg);
+        if (L.chargeT <= 0 || L.x < 0 || L.x > WORLD_W) L.state = "walking";
+        break;
+      }
+      case "act": {     // 다람쥐 도트 / 늑대 다단
+        const tgt = L.target;
+        if (!tgt || tgt.dead) { L.state = "falling"; L.vy = -2; break; }
+        const tw = tgt.w || 30, th = tgt.h || 30;
+        L.x = tgt.x + tw / 2 + Math.sin(frame / (L.kind === "wolf" ? 4 : 8)) * (L.kind === "wolf" ? 7 : 4);
+        L.y = tgt.y + th * 0.4;
+        L.actT--; L.dotCd--;
+        if (L.dotCd <= 0) {
+          if (L.kind === "wolf") { L.dotCd = 5; applyLooseDot(tgt, L.targetType, 6); }
+          else { L.dotCd = 8; applyLooseDot(tgt, L.targetType, 5); }
+        }
+        if (L.actT <= 0) { L.state = "falling"; L.vy = -2.5; L.vx = (L.x < player.x ? -1.5 : 1.5); }
+        break;
+      }
+      case "circle": {  // 새 선회 + 급강하 도트
+        const tgt = L.target;
+        if (!tgt || tgt.dead) { L.state = "falling"; break; }
+        L.circleT--; L.cAng += 0.13;
+        const cx0 = tgt.x + (tgt.w || 30) / 2, cy0 = tgt.y - 24;
+        L.x = cx0 + Math.cos(L.cAng) * 48; L.y = cy0 + Math.sin(L.cAng) * 26;
+        L.diveCd--;
+        if (L.diveCd <= 0) { L.diveCd = 18; applyLooseDot(tgt, L.targetType, 7); }
+        if (L.circleT <= 0) L.state = "falling";
+        break;
+      }
+      case "falling": {
+        L.morph = Math.max(0, L.morph - 0.08);
+        L.vy += 0.55; L.x += L.vx; L.vx *= 0.95; L.y += L.vy;
+        if (L.y >= GR) { L.y = GR; L.vy = 0; L.state = "walking"; }
+        break;
+      }
+      case "walking": { // 걸어서 복귀 → 재결합
+        L.morph = Math.max(0, L.morph - 0.08);
+        const tx = player.x + player.w / 2;
+        const dir = tx > L.x ? 1 : -1; L.face = dir;
+        L.x += dir * 2.2; L.y = GR;
+        if (Math.abs(tx - L.x) < 28) { loose = null; player.combined = true; }
+        break;
+      }
+    }
+  }
+
+  // ==========================================================================
+  // 10. 플레이어 공격 히트박스
+  // ==========================================================================
+  function getPunchBox() {
+    if (!player.punch) return null;
+    const reach = 34, thick = 22, cx = player.x + player.w / 2;
+    if (player.punch.dir === "up") return { x: cx - thick / 2, y: player.y - reach, w: thick, h: reach };
+    if (player.punch.dir === "down") return { x: cx - thick / 2, y: player.y + player.h, w: thick, h: reach };
+    const fx = player.facing > 0 ? player.x + player.w : player.x - reach;
+    return { x: fx, y: player.y + 10, w: reach, h: thick };
+  }
+  function getFlameBox() {
+    if (player.flame <= 0) return null;
+    const reach = 46, fx = player.facing > 0 ? player.x + player.w : player.x - reach;
+    return { x: fx, y: player.y - 6, w: reach, h: player.h + 12 };
+  }
+
+  function updatePlayerAttacks() {
+    const pbox = getPunchBox();
+    if (pbox && player.punch && !player.punch.hitDone && player.punch.t >= 2 && player.punch.t <= 10) {
+      const baseDmg = player.combined ? 14 : 9;
+      for (const en of enemies) {
+        if (en.dead) continue;
+        if (aabb(pbox, en)) { damageEnemy(en, baseDmg, player.facing); player.punch.hitDone = true; }
+      }
+      if (!crystal.dead && aabb(pbox, crystal)) {
+        crystal.hp -= baseDmg; player.punch.hitDone = true;
+        if (crystal.hp <= 0) { crystal.dead = true; gates.crystalGate.open = true; }
+      }
+      // 보스: 근접은 용광로에 효과적, 그 외 장갑 격감
+      if (boss && !boss.dead) {
+        const fur = bossFurnaceBox();
+        if (boss.furnaceOpen > 0 && fur && aabb(pbox, fur)) { damageBoss(baseDmg * 2.5, "furnace"); player.punch.hitDone = true; }
+        else if (aabb(pbox, boss)) { damageBoss(baseDmg * 0.3, "armor"); player.punch.hitDone = true; }
+      }
+    }
+    const fbox = getFlameBox();
+    if (fbox && player.flame > 0 && (player.flame % 6) === 0) {
+      for (const en of enemies) { if (!en.dead && aabb(fbox, en)) damageEnemy(en, 6, player.facing); }
+      if (!crystal.dead && aabb(fbox, crystal)) {
+        crystal.hp -= 6; if (crystal.hp <= 0) { crystal.dead = true; gates.crystalGate.open = true; }
+      }
+      // 보스: 불꽃은 보라 저주부위(=페이즈2+ 외눈/머리 주변)에 유효, 용광로엔 약함
+      if (boss && !boss.dead) {
+        const eye = bossEyeBox();
+        if (boss.phase >= 2 && eye && aabb(fbox, eye)) damageBoss(10, "curse");
+        else if (aabb(fbox, boss)) damageBoss(2, "armor");
+      }
+    }
+  }
+
+  function damageEnemy(en, dmg, dir) {
+    if (en.dead) return;
+    en.hp -= dmg; en.vx = (dir || 1) * 4; en.vy = -3;
+    en.hurt = 14; en.flash = 8; en.state = "hurt";
+    if (en.hp <= 0) { en.hp = 0; en.dead = true; }
+  }
+
+  // ==========================================================================
+  // 11. 일반 적 AI (v0.20)
+  // ==========================================================================
+  const ENEMY_SPEED = 1.3, SIGHT = 240, ATTACK_RANGE = 44;
+  function updateEnemies() {
+    const solids = solidsForPhysics();
+    for (const en of enemies) {
+      if (en.dead) { en.deadTimer++; continue; }
+      const px = player.x + player.w / 2, py = player.y + player.h / 2;
+      const ex = en.x + en.w / 2, ey = en.y + en.h / 2;
+      const dx = px - ex, dist = Math.hypot(dx, py - ey);
+      if (en.hurt > 0) { en.hurt--; en.vx *= 0.85; }
+      else if (!player.dead) {
+        if (dist < ATTACK_RANGE && Math.abs(py - ey) < 50) en.state = "attack";
+        else if (dist < SIGHT) en.state = "chase";
+        else en.state = "patrol";
+        if (en.state === "patrol") {
+          en.attackWindup = 0; en.vx = en.patrolDir * ENEMY_SPEED * 0.6; en.facing = en.patrolDir;
+          if (Math.abs(en.x - en.patrolOrigin) > 120) en.patrolDir *= -1;
+        } else if (en.state === "chase") {
+          en.attackWindup = 0; en.facing = dx > 0 ? 1 : -1; en.vx = en.facing * ENEMY_SPEED;
+          en.attackCooldown = Math.max(0, en.attackCooldown - 1);
+        } else if (en.state === "attack") {
+          en.facing = dx > 0 ? 1 : -1; en.vx = 0;
+          en.attackCooldown = Math.max(0, en.attackCooldown - 1);
+          if (en.attackCooldown === 0) {
+            en.attackWindup++;
+            if (en.attackWindup === 1) en.hitDone = false;
+            if (en.attackWindup >= 18) {
+              const reach = 40, ax = en.facing > 0 ? en.x + en.w : en.x - reach;
+              const atkBox = { x: ax, y: en.y + 6, w: reach, h: en.h - 6 };
+              if (!en.hitDone && aabb(atkBox, player)) { hurtPlayer(12, en.facing); en.hitDone = true; }
+              if (en.attackWindup >= 26) { en.attackWindup = 0; en.attackCooldown = 50; }
+            }
+          }
+        }
+      } else en.vx *= 0.8;
+      en.vy += GRAVITY; if (en.vy > 16) en.vy = 16;
+      resolvePlatforms(en, solids);
+      if (en.flash > 0) en.flash--;
+    }
+    enemies = enemies.filter(e => !e.dead || e.deadTimer < 12);
+  }
+
+  // ==========================================================================
+  // 12. 브론테스 보스 업데이트
+  // ==========================================================================
+  function damageBoss(amount, type) {
+    if (!boss || boss.dead) return;
+    boss.hp -= amount;
+    boss.hitFlash = 6;
+    if (boss.hp <= 0) { boss.hp = 0; boss.dead = true; boss.state = "dying"; boss.timer = 120; }
+  }
+
+  function pickBossAction() {
+    // 페이즈별 가능한 행동 풀에서 선택
+    const pool = ["hammer", "hook"];
+    if (boss.phase >= 2) { pool.push("lightning", "dash"); }
+    if (boss.phase >= 3) { pool.push("nova", "hammer"); }
+    const idx = (boss.actionSeed = (boss.actionSeed || 7) * 1103515245 + 12345) >>> 0;
+    return pool[idx % pool.length];
+  }
+
+  function updateBoss() {
+    if (!boss) return;
+    if (boss.dead) {
+      boss.deadTimer++;
+      // 충격파/낙뢰 잔여 정리
+      boss.shockwaves.length = 0; boss.lightnings.length = 0;
+      return;
+    }
+
+    // 페이즈 전환
+    const r = boss.hp / boss.maxHp;
+    if (boss.phase === 1 && r <= 0.66) { boss.phase = 2; boss.state = "roar"; boss.timer = 50; }
+    else if (boss.phase === 2 && r <= 0.33) { boss.phase = 3; boss.state = "roar"; boss.timer = 50; }
+
+    if (boss.eyeGlow > 0) boss.eyeGlow--;
+    if (boss.furnaceOpen > 0) boss.furnaceOpen--;
+    if (boss.hitFlash > 0) boss.hitFlash--;
+    if (boss.contactCd > 0) boss.contactCd--;
+
+    const px = player.x + player.w / 2;
+    const bx = boss.x + boss.w / 2;
+    boss.facing = px < bx ? -1 : 1;
+
+    boss.timer--;
+
+    switch (boss.state) {
+      case "intro":
+        if (boss.timer <= 0) { boss.state = "idle"; boss.cooldown = 40; }
+        break;
+      case "roar":
+        if (boss.timer <= 0) { boss.state = "idle"; boss.cooldown = 30; }
+        break;
+      case "idle":
+        boss.cooldown--;
+        if (boss.cooldown <= 0) {
+          const act = pickBossAction();
+          boss.state = act + "_tel";  // 텔레그래프 진입
+          boss.timer = act === "hammer" ? 42 : act === "hook" ? 30 : act === "lightning" ? 40 : act === "dash" ? 46 : 60;
+          boss.hurtThisWindow = false;
+          if (act === "dash") boss.eyeGlow = 70;     // 돌진 전 외눈 노출
+          if (act === "nova") boss.furnaceOpen = 0;
+        }
+        break;
+
+      // ---- 망치 지면강타 ----
+      case "hammer_tel":
+        if (boss.timer <= 0) { boss.state = "hammer_hit"; boss.timer = 10; }
+        break;
+      case "hammer_hit":
+        if (boss.timer === 10) {
+          // 충격파 생성 (양방향)
+          boss.shockwaves.push({ x: bx, y: GROUND_Y - 22, dir: -1, t: 60 });
+          boss.shockwaves.push({ x: bx, y: GROUND_Y - 22, dir: 1, t: 60 });
+        }
+        if (boss.timer <= 0) { boss.state = "hammer_stun"; boss.timer = 110; boss.furnaceOpen = 110; }
+        break;
+      case "hammer_stun":  // 경직 + 용광로 개방(약점)
+        if (boss.timer <= 0) { boss.state = "idle"; boss.cooldown = 24; }
+        break;
+
+      // ---- 갈고리 횡베기 ----
+      case "hook_tel":
+        if (boss.timer <= 0) { boss.state = "hook_hit"; boss.timer = 16; }
+        break;
+      case "hook_hit": {
+        const reach = 150;
+        const hx = boss.facing > 0 ? boss.x + boss.w : boss.x - reach;
+        const hb = { x: hx, y: boss.y + 70, w: reach, h: 40 };
+        if (!boss.hurtThisWindow && aabb(hb, player)) { hurtPlayer(16, boss.facing); boss.hurtThisWindow = true; }
+        if (boss.timer <= 0) { boss.state = "idle"; boss.cooldown = 30; }
+        break;
+      }
+
+      // ---- 낙뢰 (페이즈2+) ----
+      case "lightning_tel":
+        if (boss.timer === 40) {
+          // 플레이어 위치 기준 3곳 표식
+          for (let i = -1; i <= 1; i++) boss.lightnings.push({ x: player.x + i * 90 + 15, t: 40, struck: false });
+        }
+        if (boss.timer <= 0) { boss.state = "idle"; boss.cooldown = 26; }
+        break;
+
+      // ---- 외눈 돌진 (페이즈2+) ----
+      case "dash_tel":
+        if (boss.timer <= 0) { boss.state = "dash_go"; boss.timer = 26; boss.vx = boss.facing * 9; boss.eyeGlow = 26; }
+        break;
+      case "dash_go":
+        boss.x += boss.vx;
+        if (boss.x < 2660) boss.x = 2660;
+        if (boss.x + boss.w > WORLD_W) boss.x = WORLD_W - boss.w;
+        if (!boss.hurtThisWindow && aabb({ x: boss.x, y: boss.y, w: boss.w, h: boss.h }, player)) {
+          hurtPlayer(18, boss.facing); boss.hurtThisWindow = true;
+        }
+        if (boss.timer <= 0) { boss.vx = 0; boss.state = "idle"; boss.cooldown = 36; }
+        break;
+
+      // ---- 용광로 노바 (페이즈3) ----
+      case "nova_tel":
+        boss.furnaceOpen = 4;  // 충전 중 살짝 노출(고위험 고보상)
+        if (boss.timer <= 0) { boss.state = "nova_go"; boss.timer = 30; boss.nova = 1; }
+        break;
+      case "nova_go": {
+        boss.nova = (30 - boss.timer) / 30;  // 0→1 팽창
+        const radius = 60 + boss.nova * 200;
+        const dx = (player.x + player.w / 2) - bx;
+        const dy = (player.y + player.h / 2) - (boss.y + 80);
+        const dist = Math.hypot(dx, dy);
+        if (!boss.hurtThisWindow && dist < radius && dist > radius - 40) {
+          hurtPlayer(20, Math.sign(dx) || 1); boss.hurtThisWindow = true;
+        }
+        if (boss.timer <= 0) { boss.nova = 0; boss.state = "idle"; boss.cooldown = 40; }
+        break;
+      }
+    }
+
+    // 중력(돌진 외엔 제자리)
+    if (boss.state !== "dash_go") {
+      boss.vy += GRAVITY; if (boss.vy > 16) boss.vy = 16;
+      boss.y += boss.vy;
+      if (boss.y + boss.h > GROUND_Y) { boss.y = GROUND_Y - boss.h; boss.vy = 0; }
+    }
+
+    // 보스 본체 접촉 피해 (상시, 쿨다운)
+    if (boss.contactCd <= 0 && aabb({ x: boss.x, y: boss.y, w: boss.w, h: boss.h }, player)) {
+      hurtPlayer(8, boss.facing); boss.contactCd = 40;
+    }
+
+    // 충격파 업데이트
+    for (const s of boss.shockwaves) {
+      s.x += s.dir * 6; s.t--;
+      const sb = { x: s.x - 16, y: s.y, w: 32, h: 26 };
+      if (player.onGround && aabb(sb, player)) hurtPlayer(12, s.dir);
+    }
+    boss.shockwaves = boss.shockwaves.filter(s => s.t > 0);
+
+    // 낙뢰 업데이트
+    for (const lg of boss.lightnings) {
+      lg.t--;
+      if (lg.t <= 0 && !lg.struck) {
+        lg.struck = true; lg.flash = 10;
+        const lb = { x: lg.x - 14, y: 0, w: 28, h: GROUND_Y };
+        if (aabb(lb, player)) hurtPlayer(16, player.facing);
+      }
+      if (lg.flash) lg.flash--;
+    }
+    boss.lightnings = boss.lightnings.filter(lg => !lg.struck || lg.flash > 0);
+  }
+
+  // ==========================================================================
+  // 13. 플레이어 피격
+  // ==========================================================================
+  function hurtPlayer(dmg, dir) {
+    if (player.invuln > 0 || player.dead) return;
+    player.hp -= dmg;
+    player.vx = (dir || -player.facing) * 6; player.vy = -7;
+    player.invuln = 55; player.hurtFlash = 55;
+    if (player.hp <= 0) { player.hp = 0; player.dead = true; }
+  }
+  function respawnPlayer() {
+    player.hp = player.maxHp;
+    player.x = bossActive ? 2700 : checkpointX;
+    player.y = GROUND_Y - 60; player.vx = 0; player.vy = 0;
+    player.dead = false; player.invuln = 40; player.hurtFlash = 0;
+    player.combined = true; loose = null;
+    if (bossActive && boss && !boss.dead) {
+      // 보스전 중 사망 → 보스 체력 일부 회복(재도전), 위치 리셋
+      boss.hp = Math.min(boss.maxHp, boss.hp + 120);
+      boss.state = "idle"; boss.cooldown = 50;
+      boss.shockwaves.length = 0; boss.lightnings.length = 0; boss.nova = 0;
+    }
+  }
+
+  // ==========================================================================
+  // 14. 렌더링
+  // ==========================================================================
+  function drawBox(x, y, w, h, color) {
+    ctx.fillStyle = color;
+    ctx.fillRect(Math.round(x - camera.x), Math.round(y), Math.round(w), Math.round(h));
+  }
+
+  function render() {
+    // 배경 (대장간: 어두운 적갈색 그라데이션 느낌)
+    ctx.fillStyle = "#0e1118";
+    ctx.fillRect(0, 0, W, H);
+    // 패럴랙스 배경 기둥/용해로 불빛
+    for (let i = 0; i < 14; i++) {
+      const wx = i * 280;
+      const sx = wx - camera.x * 0.5;
+      ctx.fillStyle = "rgba(80,40,30,0.25)";
+      ctx.fillRect(sx, 120, 60, H);
+      ctx.fillStyle = "rgba(255,110,40,0.05)";
+      ctx.fillRect(sx + 70, 200, 120, H);
+    }
+    // 격자
+    ctx.strokeStyle = "rgba(120,70,40,0.06)";
+    for (let gx = -(camera.x % 48); gx < W; gx += 48) {
+      ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, H); ctx.stroke();
+    }
+
+    // 플랫폼
+    for (const p of platforms) {
+      drawBox(p.x, p.y, p.w, p.h, "#3a2a22");
+      drawBox(p.x, p.y, p.w, 3, "#6a4a36");
+    }
+
+    // 용암 균열 (해저드)
+    for (const lc of lavaCracks) {
+      drawBox(lc.x, lc.y - 4, lc.w, 6, "#ff7a2a");
+      const erupt = (lc.t % 120) < 30;
+      if (erupt) {
+        const fh = 50 + 20 * Math.sin(lc.t * 0.3);
+        drawBox(lc.x + 8, lc.y - fh, lc.w - 16, fh, "rgba(255,120,40,0.5)");
+      }
+    }
+
+    // 게이트
+    if (!gates.crystalGate.open) drawBox(gates.crystalGate.x, gates.crystalGate.y, gates.crystalGate.w, gates.crystalGate.h, "#5a3a8a");
+    if (gates.bossGate.armed && !gates.bossGate.open) drawBox(gates.bossGate.x, gates.bossGate.y, gates.bossGate.w, gates.bossGate.h, "#7a2a2a");
+
+    // 오염 결정
+    if (!crystal.dead) {
+      drawBox(crystal.x, crystal.y, crystal.w, crystal.h, "#9a5aca");
+      drawBox(crystal.x + 10, crystal.y + 10, crystal.w - 20, crystal.h - 20, "#c89aff");
+      // 결정 체력
+      drawBox(crystal.x, crystal.y - 8, crystal.w, 4, "#301040");
+      drawBox(crystal.x, crystal.y - 8, crystal.w * (crystal.hp / crystal.maxHp), 4, "#c060ff");
+    }
+
+    // 일반 적
+    for (const en of enemies) {
+      if (en.dead) { drawBox(en.x, en.y, en.w, en.h, "rgba(120,60,60,0.4)"); continue; }
+      let col = en.state === "attack" ? (en.attackWindup > 0 ? "#ff7a4a" : "#c75a4a") : en.state === "chase" ? "#c75a4a" : "#a8453f";
+      if (en.flash > 0) col = "#ffffff";
+      drawBox(en.x, en.y, en.w, en.h, col);
+      drawBox(en.x + (en.facing > 0 ? en.w - 10 : 4), en.y + 10, 6, 6, "#1a0e0e");
+      if (en.state === "attack" && en.attackWindup >= 10) {
+        const ax = en.facing > 0 ? en.x + en.w : en.x - 40;
+        drawBox(ax, en.y + 6, 40, en.h - 6, "rgba(255,120,60,0.25)");
+      }
+      drawBox(en.x, en.y - 9, en.w, 4, "#301010");
+      drawBox(en.x, en.y - 9, en.w * (en.hp / en.maxHp), 4, "#ff5a4a");
+    }
+
+    // 보스
+    if (boss) renderBoss();
+
+    // 루스(분리체) — 중심 기준, 상태별 표현
+    if (loose) {
+      const L = loose, a = ANIMALS[L.kind];
+      const b = looseBox(L);
+      const returning = (L.state === "falling" || L.state === "walking");
+      drawBox(b.x, b.y, b.w, b.h, returning ? "#ffd27a" : a.color);
+      drawBox(L.face > 0 ? b.x + b.w - 3 : b.x, b.y, 3, b.h, "#ffcf4a"); // 방향 띠
+      if (L.state === "flying" || L.state === "charge") {                 // 비행 잔상
+        ctx.fillStyle = "rgba(255,210,120,0.18)";
+        ctx.fillRect(b.x - L.vx - camera.x, b.y - (L.vy || 0), b.w, b.h);
+      }
+      if (L.morph < 1 && (L.state === "morph" || L.state === "flying")) { // 변신 중 불씨
+        drawBox(L.x - b.w / 4, L.y - b.h / 4, b.w / 2, b.h / 2, "rgba(255,154,46,0.5)");
+      }
+    }
+
+    // 플레이어
+    const blink = player.invuln > 0 && (Math.floor(player.invuln / 4) % 2 === 0);
+    if (!blink) {
+      let pcol = player.combined ? "#4a7ad0" : "#3a5a8a";
+      if (player.hurtFlash > 0 && (Math.floor(player.hurtFlash / 4) % 2 === 0)) pcol = "#ff8888";
+      drawBox(player.x, player.y, player.w, player.h, pcol);
+      if (player.combined) {
+        const a = ANIMALS[player.selectedAnimal];
+        drawBox(player.x + (player.facing > 0 ? player.w - 14 : 2), player.y - 12, 14, 12, a.color);
+      }
+      drawBox(player.x + (player.facing > 0 ? player.w - 9 : 4), player.y + 10, 5, 5, "#0a0e16");
+    }
+
+    const pbox = getPunchBox();
+    if (pbox && player.punch.t <= 10) drawBox(pbox.x, pbox.y, pbox.w, pbox.h, "rgba(120,200,255,0.55)");
+    const fbox = getFlameBox();
+    if (fbox) drawBox(fbox.x, fbox.y, fbox.w, fbox.h, (player.flame % 4 < 2) ? "rgba(255,140,40,0.55)" : "rgba(255,90,30,0.45)");
+
+    // 구간 표지판
+    drawSignposts();
+
+    // HUD
+    drawHUD();
+
+    if (player.dead) {
+      ctx.fillStyle = "rgba(10,14,22,0.7)"; ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = "#ff6a5a"; ctx.font = "bold 40px system-ui"; ctx.textAlign = "center";
+      ctx.fillText("탈로스 격파됨", W / 2, H / 2 - 10);
+      ctx.fillStyle = "#c8d2e0"; ctx.font = "18px system-ui";
+      ctx.fillText("R 키로 리스폰", W / 2, H / 2 + 28);
+      ctx.textAlign = "left";
+    }
+    if (boss && boss.dead && boss.deadTimer > 20) {
+      ctx.fillStyle = "rgba(10,14,22,0.6)"; ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = "#ffb060"; ctx.font = "bold 36px system-ui"; ctx.textAlign = "center";
+      ctx.fillText("브론테스 격파", W / 2, H / 2 - 6);
+      ctx.fillStyle = "#c8d2e0"; ctx.font = "16px system-ui";
+      ctx.fillText("첫 실패작이 불씨 속으로 돌아가다 — 첫 권능 회수", W / 2, H / 2 + 28);
+      ctx.textAlign = "left";
+    }
+  }
+
+  function renderBoss() {
+    const dying = boss.dead;
+    // 보라 저주 오라 (페이즈 따라 진해짐)
+    if (boss.phase >= 2 && !dying) {
+      ctx.fillStyle = "rgba(150,80,200,0.18)";
+      ctx.fillRect(boss.x - 14 - camera.x, boss.y - 14, boss.w + 28, boss.h + 20);
+    }
+    // 본체
+    let body = "#4a3a30";
+    if (boss.hitFlash > 0) body = "#ffd0a0";
+    if (dying) body = "rgba(70,55,45,0.5)";
+    drawBox(boss.x, boss.y, boss.w, boss.h, body);
+    // 장갑 디테일
+    drawBox(boss.x + 6, boss.y + 40, boss.w - 12, 8, "#5a4636");
+    // 망치 팔(전방) / 갈고리 팔(후방) 표시
+    const hammerSide = boss.facing > 0 ? boss.x + boss.w - 6 : boss.x - 28;
+    drawBox(hammerSide, boss.y + 60, 34, 40, "#3a2e26");   // 망치 머리
+    // 가슴 용광로
+    const fur = bossFurnaceBox();
+    if (fur) {
+      if (boss.furnaceOpen > 0 && !dying) {
+        const glow = (boss.furnaceOpen % 6 < 3) ? "#ff9030" : "#ffce60";
+        drawBox(fur.x, fur.y, fur.w, fur.h, glow);
+        drawBox(fur.x + 8, fur.y + 8, fur.w - 16, fur.h - 16, "#fff0c0");
+      } else {
+        drawBox(fur.x + 6, fur.y + 6, fur.w - 12, fur.h - 12, "#7a2a10"); // 닫힘(어두운 화로)
+      }
+    }
+    // 외눈
+    const eye = bossEyeBox();
+    if (eye) {
+      const eyeCol = (boss.eyeGlow > 0 && !dying)
+        ? ((boss.eyeGlow % 4 < 2) ? "#ff3030" : "#ffd0d0")  // 노출 시 강하게 점멸
+        : "#7a1818";
+      drawBox(eye.x, eye.y, eye.w, eye.h, eyeCol);
+      drawBox(eye.x + eye.w / 2 - 3, eye.y + eye.h / 2 - 3, 6, 6, "#1a0000");
+    }
+
+    // 텔레그래프 시각화
+    if (boss.state === "hammer_tel") {
+      drawBox(boss.x - 4, boss.y - 30, boss.w + 8, 8, "rgba(255,120,40,0.5)"); // 망치 들어올림 표시
+    }
+    if (boss.state === "hook_tel") {
+      const reach = 150, hx = boss.facing > 0 ? boss.x + boss.w : boss.x - reach;
+      drawBox(hx, boss.y + 70, reach, 40, "rgba(200,120,60,0.22)");
+    }
+    if (boss.state === "hook_hit") {
+      const reach = 150, hx = boss.facing > 0 ? boss.x + boss.w : boss.x - reach;
+      drawBox(hx, boss.y + 70, reach, 40, "rgba(220,150,80,0.5)");
+    }
+    if (boss.state === "dash_tel") {
+      drawBox(boss.x, boss.y + boss.h - 6, boss.facing > 0 ? 200 : -200, 6, "rgba(255,60,60,0.3)");
+    }
+
+    // 충격파
+    for (const s of boss.shockwaves) {
+      drawBox(s.x - 16, s.y, 32, 26, (s.t % 4 < 2) ? "rgba(255,150,50,0.7)" : "rgba(255,100,30,0.6)");
+    }
+    // 낙뢰
+    for (const lg of boss.lightnings) {
+      if (!lg.struck) {
+        drawBox(lg.x - 14, GROUND_Y - 4, 28, 4, "rgba(120,180,255,0.7)");   // 지면 표식
+        if (lg.t < 12) drawBox(lg.x - 2, 0, 4, GROUND_Y, "rgba(150,200,255,0.25)");
+      } else {
+        drawBox(lg.x - 14, 0, 28, GROUND_Y, "rgba(180,220,255,0.8)");        // 번개 본체
+      }
+    }
+    // 노바
+    if (boss.nova > 0) {
+      const radius = 60 + boss.nova * 200;
+      ctx.strokeStyle = "rgba(255,130,40," + (1 - boss.nova) + ")";
+      ctx.lineWidth = 16;
+      ctx.beginPath();
+      ctx.arc(boss.x + boss.w / 2 - camera.x, boss.y + 80, radius, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.lineWidth = 1;
+    }
+
+    // 보스 체력바 (상단 고정)
+    if (!dying || boss.deadTimer < 60) {
+      const bw = 560, bx = (W - bw) / 2, by = 26;
+      ctx.fillStyle = "#1a1014"; ctx.fillRect(bx - 3, by - 3, bw + 6, 20);
+      ctx.fillStyle = "#3a1014"; ctx.fillRect(bx, by, bw, 14);
+      ctx.fillStyle = "#ff6a3a"; ctx.fillRect(bx, by, bw * (boss.hp / boss.maxHp), 14);
+      // 페이즈 경계선
+      ctx.fillStyle = "#0e1118";
+      ctx.fillRect(bx + bw * 0.66, by, 2, 14);
+      ctx.fillRect(bx + bw * 0.33, by, 2, 14);
+      ctx.fillStyle = "#ffd2a0"; ctx.font = "12px system-ui"; ctx.textAlign = "center";
+      ctx.fillText("브론테스 — 첫 실패작 · 신살 병기 시제품   (Phase " + boss.phase + ")", W / 2, by - 6);
+      ctx.textAlign = "left";
+    }
+  }
+
+  function drawSignposts() {
+    const signs = [
+      { x: 120, y: GROUND_Y - 90, t: "대장간 폐허" },
+      { x: 800, y: GROUND_Y - 90, t: "점프 구간 ↑↑" },
+      { x: 1380, y: GROUND_Y - 90, t: "던지기 K로 결정 파괴" },
+      { x: 1980, y: GROUND_Y - 90, t: "전투 아레나" },
+      { x: 2680, y: GROUND_Y - 90, t: "보스: 브론테스" },
+    ];
+    ctx.font = "12px system-ui"; ctx.textAlign = "center";
+    for (const s of signs) {
+      const sx = s.x - camera.x;
+      if (sx < -100 || sx > W + 100) continue;
+      ctx.fillStyle = "rgba(255,200,140,0.6)";
+      ctx.fillText(s.t, sx, s.y);
+    }
+    ctx.textAlign = "left";
+  }
+
+  function drawHUD() {
+    const bx = 18, by = 18, bw = 240, bh = 18;
+    ctx.fillStyle = "#0a0e16"; ctx.fillRect(bx - 2, by - 2, bw + 4, bh + 4);
+    ctx.fillStyle = "#3a1414"; ctx.fillRect(bx, by, bw, bh);
+    const hpRatio = player.hp / player.maxHp;
+    ctx.fillStyle = hpRatio > 0.5 ? "#3fd07a" : hpRatio > 0.25 ? "#e0c040" : "#e04040";
+    ctx.fillRect(bx, by, bw * hpRatio, bh);
+    ctx.fillStyle = "#dfe8f5"; ctx.font = "12px system-ui"; ctx.textAlign = "left";
+    ctx.fillText("탈로스  HP " + Math.ceil(player.hp) + "/" + player.maxHp, bx + 6, by + 13);
+
+    ctx.fillStyle = player.combined ? "#7ab0ff" : "#ff9a6a"; ctx.font = "13px system-ui";
+    ctx.fillText(player.combined ? "결합 (강화·더블점프)" : "분리 (약화)", bx, by + 38);
+    ctx.fillStyle = "#9fb3d6";
+    const loaded = player.combined ? "장전: " : "복귀 대기 · 다음: ";
+    ctx.fillText("루스 " + loaded + ANIMALS[player.selectedAnimal].name + "  [K던지기·순환 / 1·2·3·4]", bx, by + 58);
+  }
+
+  // ==========================================================================
+  // 15. 메인 루프
+  // ==========================================================================
+  function updateCamera() {
+    let target = player.x + player.w / 2 - W / 2;
+    if (target < 0) target = 0;
+    if (target > WORLD_W - W) target = WORLD_W - W;
+    camera.x += (target - camera.x) * 0.12;
+  }
+
+  function tick() {
+    frame++;
+    updatePlayer();
+    updateLoose();
+    updatePlayerAttacks();
+    updateEnemies();
+    updateBoss();
+    for (const lc of lavaCracks) {
+      lc.t++;
+      // 용암 분출 접촉 피해
+      if ((lc.t % 120) < 30) {
+        const fb = { x: lc.x + 8, y: GROUND_Y - 70, w: lc.w - 16, h: 70 };
+        if (aabb(fb, player)) hurtPlayer(6, player.facing);
+      }
+    }
+    updateCamera();
+    render();
+    for (const k in pressed) pressed[k] = false;
+    requestAnimationFrame(tick);
+  }
+
+  spawnArenaEnemies();
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
