@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>탈로스 - 마지막 불씨 (prototype v0.20)</title>
+<!--
+================================================================================
+  탈로스 - 마지막 불씨  /  Talos: The Last Ember
+  2D 액션 플랫포머 프로토타입 (사이버펑크 + 그리스신화)
+  비주얼은 박스(히트박스) 기준. 스프라이트는 출시 직전 교체.
+
+  [핵심 메커니즘]
+   - 탈로스(본체) + 루스(공생 동물) 결합/분리 전투
+   - 결합 = 기본 강화 (+더블점프), 던지면 분리(약화) + 동물 변신
+   - 동물 4종: 다람쥐 / 늑대 / 황소 / 새
+
+  ────────────────────────────────────────────────────────────────────────────
+  [변경 이력]
+  ┌─────────┬────────────┬──────────────────────────────────────────────────┐
+  │ 버전    │ 날짜       │ 변경 내용                                          │
+  ├─────────┼────────────┼──────────────────────────────────────────────────┤
+  │ v0.19   │ 이전       │ 이동(2.4)/점프(체공)/펀치 3방향/동물 4종/           │
+  │         │            │ 불꽃난무(Shift)/루스 던지기·복귀                    │
+  │ v0.20   │ 2026-06-26 │ 플레이어 체력+피격(넉백/무적/점멸) 추가,            │
+  │         │            │ 공격하는 적(순찰→추적→근접공격) 추가,               │
+  │         │            │ HUD 체력바, 적 체력바, 리스폰/게임오버 처리          │
+  └─────────┴────────────┴──────────────────────────────────────────────────┘
+  ────────────────────────────────────────────────────────────────────────────
+
+  [조작]
+   - 이동:      ← → 또는 A / D
+   - 점프:      Space / ↑ / W   (결합 상태에서만 더블점프, 길게 누르면 더 높이)
+   - 펀치:      J            (↑/↓ 동시 입력 시 상/하 펀치, 기본 전방)
+   - 불꽃난무:  Shift
+   - 루스 던지기/복귀: K   (던지면 분리·약화, 다시 누르면 복귀·결합)
+   - 동물 선택: 1 다람쥐 / 2 늑대 / 3 황소 / 4 새
+   - 리스폰:    R (게임오버 시)
+================================================================================
+-->
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #0a0e16; color: #c8d2e0;
+    font-family: "Segoe UI", system-ui, sans-serif;
+    overflow: hidden;
+  }
+  #wrap {
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; height: 100vh; gap: 10px;
+  }
+  canvas {
+    background: #121826;
+    border: 1px solid #2a3550;
+    box-shadow: 0 0 40px rgba(60,120,255,0.15);
+    image-rendering: pixelated;
+  }
+  #help {
+    font-size: 12px; color: #6b7a96; max-width: 960px; text-align: center;
+    line-height: 1.6;
+  }
+  #help b { color: #9fb3d6; }
+  .key { color: #ffb347; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="960" height="540"></canvas>
+  <div id="help">
+    <b>탈로스 - 마지막 불씨</b> v0.20 &nbsp;|&nbsp;
+    이동 <span class="key">← →</span> ·
+    점프 <span class="key">Space/↑</span> (결합 시 더블) ·
+    펀치 <span class="key">J</span> (↑↓+J 방향) ·
+    불꽃난무 <span class="key">Shift</span> ·
+    루스 던지기/복귀 <span class="key">K</span> ·
+    동물 <span class="key">1·2·3·4</span> ·
+    리스폰 <span class="key">R</span>
+  </div>
+</div>
+<script>
+"use strict";
+(function () {
+  // ==========================================================================
+  // 0. 캔버스 / 전역
+  // ==========================================================================
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width;
+  const H = canvas.height;
+
+  const GRAVITY = 0.6;
+  const GROUND_Y = H - 60;           // 바닥 표면 y
+
+  // ==========================================================================
+  // 1. 입력
+  // ==========================================================================
+  const keys = Object.create(null);
+  const pressed = Object.create(null);   // 이번 프레임에 새로 눌린 키 (엣지)
+
+  const KEYMAP = {
+    "ArrowLeft": "left", "KeyA": "left",
+    "ArrowRight": "right", "KeyD": "right",
+    "ArrowUp": "up", "KeyW": "up",
+    "ArrowDown": "down", "KeyS": "down",
+    "Space": "jump",
+    "KeyJ": "punch",
+    "ShiftLeft": "flame", "ShiftRight": "flame",
+    "KeyK": "throw",
+    "Digit1": "anim1", "Digit2": "anim2", "Digit3": "anim3", "Digit4": "anim4",
+    "KeyR": "respawn",
+  };
+
+  window.addEventListener("keydown", (e) => {
+    const a = KEYMAP[e.code];
+    if (a) {
+      if (!keys[a]) pressed[a] = true;   // 엣지 감지
+      keys[a] = true;
+      e.preventDefault();
+    }
+    // 점프/상하는 ↑가 점프와 조준 둘 다 쓰이므로 up도 함께 처리됨
+  });
+  window.addEventListener("keyup", (e) => {
+    const a = KEYMAP[e.code];
+    if (a) { keys[a] = false; e.preventDefault(); }
+  });
+
+  function consume(action) {
+    if (pressed[action]) { pressed[action] = false; return true; }
+    return false;
+  }
+
+  // ==========================================================================
+  // 2. 레벨 (수직 슬라이스 임시: 바닥 + 몇 개 발판)
+  //    맵 5구간/보스는 후속 버전. 지금은 전투 검증용 아레나.
+  // ==========================================================================
+  const platforms = [
+    { x: 0,   y: GROUND_Y, w: W,   h: 60 },     // 바닥
+    { x: 180, y: 400,      w: 160, h: 16 },
+    { x: 430, y: 330,      w: 150, h: 16 },
+    { x: 660, y: 410,      w: 150, h: 16 },
+    { x: 760, y: 250,      w: 130, h: 16 },
+  ];
+
+  // ==========================================================================
+  // 3. 동물 4종 정의 (루스 분리 시 변신 형태)
+  //    각 형태는 던졌을 때의 속도/크기/색/타격력이 다름.
+  // ==========================================================================
+  const ANIMALS = {
+    squirrel: { name: "다람쥐", color: "#d39a5a", w: 18, h: 16, speed: 11, dmg: 8,  life: 70,  gravity: 0.15 },
+    wolf:     { name: "늑대",   color: "#9aa6b8", w: 30, h: 20, speed: 8,  dmg: 16, life: 65,  gravity: 0.0  },
+    bull:     { name: "황소",   color: "#b06a4a", w: 36, h: 28, speed: 6,  dmg: 24, life: 80,  gravity: 0.0  },
+    bird:     { name: "새",     color: "#6ec6e0", w: 22, h: 16, speed: 13, dmg: 10, life: 90,  gravity: -0.05 },
+  };
+  const ANIMAL_ORDER = ["squirrel", "wolf", "bull", "bird"];
+
+  // ==========================================================================
+  // 4. 플레이어 (탈로스) + 루스(공생체)
+  // ==========================================================================
+  const SPAWN = { x: 80, y: GROUND_Y - 48 };
+
+  const player = {
+    x: SPAWN.x, y: SPAWN.y, w: 30, h: 48,
+    vx: 0, vy: 0,
+    facing: 1,
+    onGround: false,
+    // 점프
+    jumpsUsed: 0,
+    jumpHeld: false,
+    // 체력
+    hp: 100, maxHp: 100,
+    invuln: 0,            // 무적 프레임 (피격 후)
+    hurtFlash: 0,         // 피격 점멸 타이머
+    dead: false,
+    // 결합 상태
+    combined: true,       // 루스 결합 여부
+    selectedAnimal: "wolf",
+    // 공격 상태
+    punch: null,          // {dir, t, hitDone}
+    flame: 0,             // 불꽃난무 잔여 프레임
+    flameHits: null,      // 이번 난무에서 이미 맞춘 적 (중복 방지)
+  };
+
+  // 던져진 루스 (분리 상태일 때만 활성)
+  let loose = null;       // {x,y,vx,vy,w,h,animal,life,returning,hitSet}
+
+  // ==========================================================================
+  // 5. 적 (공격하는 적: 순찰 → 추적 → 근접 공격)
+  // ==========================================================================
+  let enemies = [];
+
+  function makeEnemy(x, y) {
+    return {
+      x, y, w: 34, h: 44,
+      vx: 0, vy: 0,
+      facing: -1,
+      onGround: false,
+      hp: 40, maxHp: 40,
+      // AI
+      state: "patrol",         // patrol | chase | attack | hurt
+      patrolDir: -1,
+      patrolOrigin: x,
+      attackCooldown: 0,
+      attackWindup: 0,         // 공격 예비동작 (텔레그래프)
+      hitDone: false,
+      hurt: 0,                 // 피격 경직
+      flash: 0,
+      dead: false,
+    };
+  }
+
+  function spawnEnemies() {
+    enemies = [
+      makeEnemy(620, GROUND_Y - 44),
+      makeEnemy(820, GROUND_Y - 44),
+      makeEnemy(470, 330 - 44),
+    ];
+  }
+
+  // ==========================================================================
+  // 6. 충돌 유틸
+  // ==========================================================================
+  function aabb(a, b) {
+    return a.x < b.x + b.w && a.x + a.w > b.x &&
+           a.y < b.y + b.h && a.y + a.h > b.y;
+  }
+
+  // 박스 vs 플랫폼 세로/가로 해결. 반환: onGround 여부
+  function resolvePlatforms(e) {
+    e.onGround = false;
+    // 수평 이동
+    e.x += e.vx;
+    for (const p of platforms) {
+      if (aabb(e, p)) {
+        if (e.vx > 0) e.x = p.x - e.w;
+        else if (e.vx < 0) e.x = p.x + p.w;
+        e.vx = 0;
+      }
+    }
+    // 수직 이동
+    e.y += e.vy;
+    for (const p of platforms) {
+      if (aabb(e, p)) {
+        if (e.vy > 0) { e.y = p.y - e.h; e.onGround = true; }
+        else if (e.vy < 0) { e.y = p.y + p.h; }
+        e.vy = 0;
+      }
+    }
+    // 화면 경계
+    if (e.x < 0) e.x = 0;
+    if (e.x + e.w > W) e.x = W - e.w;
+    return e.onGround;
+  }
+
+  // ==========================================================================
+  // 7. 플레이어 업데이트
+  // ==========================================================================
+  const MOVE_SPEED = 2.4;            // 스펙 명시 이동 속도
+  const MOVE_SPEED_WEAK = 1.7;       // 분리(약화) 시
+  const JUMP_V = -11.5;
+  const JUMP_CUT = 0.5;              // 점프 짧게 누르면 상승 감쇠
+
+  function updatePlayer() {
+    if (player.dead) {
+      if (consume("respawn")) respawnPlayer();
+      return;
+    }
+
+    // --- 동물 선택 ---
+    if (consume("anim1")) player.selectedAnimal = "squirrel";
+    if (consume("anim2")) player.selectedAnimal = "wolf";
+    if (consume("anim3")) player.selectedAnimal = "bull";
+    if (consume("anim4")) player.selectedAnimal = "bird";
+
+    const weak = !player.combined;
+    const spd = weak ? MOVE_SPEED_WEAK : MOVE_SPEED;
+
+    // --- 수평 이동 ---
+    let move = 0;
+    if (keys.left)  move -= 1;
+    if (keys.right) move += 1;
+    if (move !== 0) {
+      player.vx = move * spd;
+      player.facing = move;
+    } else {
+      player.vx = 0;
+    }
+
+    // --- 점프 (결합 시 더블점프) ---
+    const maxJumps = player.combined ? 2 : 1;
+    if (consume("jump") || consume("up")) {
+      if (player.jumpsUsed < maxJumps) {
+        player.vy = JUMP_V;
+        player.jumpsUsed++;
+        player.jumpHeld = true;
+        player.onGround = false;
+      }
+    }
+    // 가변 점프 높이 (체공): 점프 키 떼면 상승 컷
+    if (player.jumpHeld && !(keys.jump || keys.up) && player.vy < 0) {
+      player.vy *= JUMP_CUT;
+      player.jumpHeld = false;
+    }
+
+    // --- 중력 ---
+    player.vy += GRAVITY;
+    if (player.vy > 16) player.vy = 16;
+
+    // --- 펀치 (3방향) ---
+    if (consume("punch") && !player.punch) {
+      let dir = "fwd";
+      if (keys.up) dir = "up";
+      else if (keys.down && !player.onGround) dir = "down";
+      else if (keys.down) dir = "down";
+      player.punch = { dir, t: 0, hitDone: false };
+    }
+    if (player.punch) {
+      player.punch.t++;
+      if (player.punch.t > 14) player.punch = null;
+    }
+
+    // --- 불꽃난무 (Shift) ---
+    if (consume("flame") && player.flame <= 0) {
+      player.flame = 36;
+      player.flameHits = new Set();
+    }
+    if (player.flame > 0) player.flame--;
+
+    // --- 루스 던지기 / 복귀 (분리/결합 토글) ---
+    if (consume("throw")) {
+      if (player.combined) throwLoose();
+      else recallLoose();
+    }
+
+    // --- 물리 적용 ---
+    const wasOnGround = player.onGround;
+    resolvePlatforms(player);
+    if (player.onGround && !wasOnGround) player.jumpsUsed = 0;
+    if (player.onGround) player.jumpsUsed = 0;
+
+    // --- 타이머 ---
+    if (player.invuln > 0) player.invuln--;
+    if (player.hurtFlash > 0) player.hurtFlash--;
+
+    // --- 낙사 방지(아레나): 화면 아래로 떨어지면 데미지+리스폰 위치 복귀 ---
+    if (player.y > H + 100) {
+      hurtPlayer(20, 0);
+      player.x = SPAWN.x; player.y = SPAWN.y; player.vy = 0;
+    }
+  }
+
+  function throwLoose() {
+    const a = ANIMALS[player.selectedAnimal];
+    player.combined = false;
+    loose = {
+      x: player.x + (player.facing > 0 ? player.w : -a.w),
+      y: player.y + player.h * 0.4,
+      vx: player.facing * a.speed,
+      vy: a === ANIMALS.bird ? -2 : (a === ANIMALS.squirrel ? -3 : 0),
+      w: a.w, h: a.h,
+      animalKey: player.selectedAnimal,
+      life: a.life,
+      returning: false,
+      hitSet: new Set(),
+    };
+  }
+
+  function recallLoose() {
+    if (loose) loose.returning = true;
+  }
+
+  // ==========================================================================
+  // 8. 루스(분리체) 업데이트 — 던져진 동물의 비행/타격/복귀
+  // ==========================================================================
+  function updateLoose() {
+    if (!loose) return;
+    const a = ANIMALS[loose.animalKey];
+
+    if (loose.returning) {
+      // 플레이어에게 귀환
+      const tx = player.x + player.w / 2;
+      const ty = player.y + player.h / 2;
+      const cx = loose.x + loose.w / 2;
+      const cy = loose.y + loose.h / 2;
+      const dx = tx - cx, dy = ty - cy;
+      const d = Math.hypot(dx, dy) || 1;
+      const rs = 14;
+      loose.x += (dx / d) * rs;
+      loose.y += (dy / d) * rs;
+      if (d < 26) {
+        // 재결합
+        loose = null;
+        player.combined = true;
+        return;
+      }
+    } else {
+      // 비행 (동물별 중력)
+      loose.vy += a.gravity;
+      loose.x += loose.vx;
+      loose.y += loose.vy;
+      loose.life--;
+      // 벽/수명 만료 시 자동 귀환
+      if (loose.life <= 0 || loose.x < -40 || loose.x > W + 40) {
+        loose.returning = true;
+      }
+    }
+
+    // 적 타격 (분리체)
+    for (const en of enemies) {
+      if (en.dead) continue;
+      if (!loose.hitSet.has(en) && aabb(loose, en)) {
+        loose.hitSet.add(en);
+        damageEnemy(en, a.dmg, Math.sign(loose.vx || player.facing));
+        // 던진 직후 첫 타격 후 귀환 시작 (관통은 새/다람쥐만 살짝 허용)
+        if (loose.animalKey === "bull" || loose.animalKey === "wolf") {
+          loose.returning = true;
+        }
+      }
+    }
+  }
+
+  // ==========================================================================
+  // 9. 플레이어 공격 히트박스 → 적 데미지
+  // ==========================================================================
+  function getPunchBox() {
+    if (!player.punch) return null;
+    const reach = 34, thick = 22;
+    const cx = player.x + player.w / 2;
+    if (player.punch.dir === "up") {
+      return { x: cx - thick / 2, y: player.y - reach, w: thick, h: reach };
+    } else if (player.punch.dir === "down") {
+      return { x: cx - thick / 2, y: player.y + player.h, w: thick, h: reach };
+    } else {
+      const fx = player.facing > 0 ? player.x + player.w : player.x - reach;
+      return { x: fx, y: player.y + 10, w: reach, h: thick };
+    }
+  }
+
+  function getFlameBox() {
+    if (player.flame <= 0) return null;
+    const reach = 46;
+    const fx = player.facing > 0 ? player.x + player.w : player.x - reach;
+    return { x: fx, y: player.y - 6, w: reach, h: player.h + 12 };
+  }
+
+  function updatePlayerAttacks() {
+    // 펀치: 활성 구간(2~10프레임)에서 1회 타격
+    const pbox = getPunchBox();
+    if (pbox && player.punch && !player.punch.hitDone &&
+        player.punch.t >= 2 && player.punch.t <= 10) {
+      const baseDmg = player.combined ? 14 : 9;   // 결합=강화
+      for (const en of enemies) {
+        if (en.dead) continue;
+        if (aabb(pbox, en)) {
+          damageEnemy(en, baseDmg, player.facing);
+          player.punch.hitDone = true;
+        }
+      }
+    }
+    // 불꽃난무: 지속 다단히트(같은 적은 짧은 간격으로 재타격)
+    const fbox = getFlameBox();
+    if (fbox && player.flame > 0) {
+      // 6프레임마다 한 번씩 적별 타격 허용
+      const tick = (player.flame % 6) === 0;
+      if (tick) {
+        for (const en of enemies) {
+          if (en.dead) continue;
+          if (aabb(fbox, en)) damageEnemy(en, 6, player.facing);
+        }
+      }
+    }
+  }
+
+  function damageEnemy(en, dmg, dir) {
+    if (en.dead) return;
+    en.hp -= dmg;
+    en.vx = (dir || 1) * 4;
+    en.vy = -3;
+    en.hurt = 14;
+    en.flash = 8;
+    en.state = "hurt";
+    if (en.hp <= 0) { en.hp = 0; en.dead = true; }
+  }
+
+  // ==========================================================================
+  // 10. 적 AI 업데이트 (순찰 → 추적 → 근접공격) + 플레이어 가해
+  // ==========================================================================
+  const ENEMY_SPEED = 1.3;
+  const SIGHT = 240;
+  const ATTACK_RANGE = 44;
+
+  function updateEnemies() {
+    for (const en of enemies) {
+      if (en.dead) continue;
+
+      const px = player.x + player.w / 2;
+      const py = player.y + player.h / 2;
+      const ex = en.x + en.w / 2;
+      const ey = en.y + en.h / 2;
+      const dx = px - ex;
+      const dist = Math.hypot(dx, py - ey);
+
+      // 경직 처리
+      if (en.hurt > 0) {
+        en.hurt--;
+        en.vx *= 0.85;
+      } else if (!player.dead) {
+        // ---- 상태 머신 ----
+        if (dist < ATTACK_RANGE && Math.abs(py - ey) < 50) {
+          en.state = "attack";
+        } else if (dist < SIGHT) {
+          en.state = "chase";
+        } else {
+          en.state = "patrol";
+        }
+
+        if (en.state === "patrol") {
+          en.attackWindup = 0;
+          en.vx = en.patrolDir * ENEMY_SPEED * 0.6;
+          en.facing = en.patrolDir;
+          // 순찰 범위 또는 벽 끝에서 반전
+          if (Math.abs(en.x - en.patrolOrigin) > 120) {
+            en.patrolDir *= -1;
+          }
+          if (en.x <= 0) en.patrolDir = 1;
+          if (en.x + en.w >= W) en.patrolDir = -1;
+        } else if (en.state === "chase") {
+          en.attackWindup = 0;
+          en.facing = dx > 0 ? 1 : -1;
+          en.vx = en.facing * ENEMY_SPEED;
+          en.attackCooldown = Math.max(0, en.attackCooldown - 1);
+        } else if (en.state === "attack") {
+          en.facing = dx > 0 ? 1 : -1;
+          en.vx = 0;
+          en.attackCooldown = Math.max(0, en.attackCooldown - 1);
+          if (en.attackCooldown === 0) {
+            // 공격 예비동작(텔레그래프) → 가격
+            en.attackWindup++;
+            if (en.attackWindup === 1) en.hitDone = false;
+            if (en.attackWindup >= 18) {
+              // 가격 판정
+              const lungeReach = 40;
+              const ax = en.facing > 0 ? en.x + en.w : en.x - lungeReach;
+              const atkBox = { x: ax, y: en.y + 6, w: lungeReach, h: en.h - 6 };
+              if (!en.hitDone && aabb(atkBox, player)) {
+                hurtPlayer(12, en.facing);
+                en.hitDone = true;
+              }
+              if (en.attackWindup >= 26) {
+                en.attackWindup = 0;
+                en.attackCooldown = 50;   // 공격 후 쿨다운
+              }
+            }
+          }
+        }
+      } else {
+        en.vx *= 0.8;
+      }
+
+      // 중력 + 물리
+      en.vy += GRAVITY;
+      if (en.vy > 16) en.vy = 16;
+      resolvePlatforms(en);
+
+      if (en.flash > 0) en.flash--;
+    }
+    // 사망한 적 제거(잠깐 유지 후)
+    enemies = enemies.filter(e => !e.dead || (e.deadTimer = (e.deadTimer || 0) + 1) < 12);
+  }
+
+  // ==========================================================================
+  // 11. 플레이어 피격 (체력/넉백/무적/점멸)
+  // ==========================================================================
+  function hurtPlayer(dmg, dir) {
+    if (player.invuln > 0 || player.dead) return;
+    player.hp -= dmg;
+    player.vx = (dir || -player.facing) * 6;
+    player.vy = -7;
+    player.invuln = 60;       // 1초 무적
+    player.hurtFlash = 60;
+    if (player.hp <= 0) {
+      player.hp = 0;
+      player.dead = true;
+    }
+  }
+
+  function respawnPlayer() {
+    player.hp = player.maxHp;
+    player.x = SPAWN.x; player.y = SPAWN.y;
+    player.vx = 0; player.vy = 0;
+    player.dead = false;
+    player.invuln = 40;
+    player.hurtFlash = 0;
+    player.combined = true;
+    loose = null;
+    spawnEnemies();
+  }
+
+  // ==========================================================================
+  // 12. 렌더링
+  // ==========================================================================
+  function drawBox(x, y, w, h, color) {
+    ctx.fillStyle = color;
+    ctx.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+  }
+
+  function render() {
+    // 배경
+    ctx.fillStyle = "#121826";
+    ctx.fillRect(0, 0, W, H);
+
+    // 배경 격자 (사이버펑크 느낌)
+    ctx.strokeStyle = "rgba(60,90,150,0.08)";
+    ctx.lineWidth = 1;
+    for (let gx = 0; gx < W; gx += 40) {
+      ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, H); ctx.stroke();
+    }
+    for (let gy = 0; gy < H; gy += 40) {
+      ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
+    }
+
+    // 플랫폼
+    for (const p of platforms) {
+      drawBox(p.x, p.y, p.w, p.h, "#2c3a5c");
+      drawBox(p.x, p.y, p.w, 3, "#3f5a8c");
+    }
+
+    // 적
+    for (const en of enemies) {
+      if (en.dead) {
+        drawBox(en.x, en.y, en.w, en.h, "rgba(120,60,60,0.4)");
+        continue;
+      }
+      let col = "#a8453f";
+      if (en.state === "chase") col = "#c75a4a";
+      if (en.state === "attack") col = en.attackWindup > 0 ? "#ff7a4a" : "#c75a4a";
+      if (en.flash > 0) col = "#ffffff";
+      drawBox(en.x, en.y, en.w, en.h, col);
+      // 눈(방향 표시)
+      drawBox(en.x + (en.facing > 0 ? en.w - 10 : 4), en.y + 10, 6, 6, "#1a0e0e");
+      // 공격 텔레그래프 표시
+      if (en.state === "attack" && en.attackWindup >= 10) {
+        const ax = en.facing > 0 ? en.x + en.w : en.x - 40;
+        drawBox(ax, en.y + 6, 40, en.h - 6, "rgba(255,120,60,0.25)");
+      }
+      // 적 체력바
+      const bw = en.w;
+      drawBox(en.x, en.y - 9, bw, 4, "#301010");
+      drawBox(en.x, en.y - 9, bw * (en.hp / en.maxHp), 4, "#ff5a4a");
+    }
+
+    // 던져진 루스(분리체)
+    if (loose) {
+      const a = ANIMALS[loose.animalKey];
+      const c = loose.returning ? "#ffd27a" : a.color;
+      drawBox(loose.x, loose.y, loose.w, loose.h, c);
+      // 잔상
+      ctx.fillStyle = "rgba(255,210,120,0.18)";
+      ctx.fillRect(loose.x - loose.vx, loose.y - loose.vy, loose.w, loose.h);
+    }
+
+    // 플레이어 (피격 점멸: 무적 중 깜빡)
+    const blink = player.invuln > 0 && (Math.floor(player.invuln / 4) % 2 === 0);
+    if (!blink) {
+      let pcol = player.combined ? "#4a7ad0" : "#3a5a8a";
+      if (player.hurtFlash > 0 && (Math.floor(player.hurtFlash / 4) % 2 === 0)) pcol = "#ff8888";
+      drawBox(player.x, player.y, player.w, player.h, pcol);
+
+      // 결합 시 루스 글로우 (어깨 위 작은 동물 박스)
+      if (player.combined) {
+        const a = ANIMALS[player.selectedAnimal];
+        ctx.globalAlpha = 0.9;
+        drawBox(player.x + (player.facing > 0 ? player.w - 14 : 2), player.y - 12, 14, 12, a.color);
+        ctx.globalAlpha = 1;
+      }
+      // 눈(방향)
+      drawBox(player.x + (player.facing > 0 ? player.w - 9 : 4), player.y + 10, 5, 5, "#0a0e16");
+    }
+
+    // 펀치 히트박스
+    const pbox = getPunchBox();
+    if (pbox && player.punch.t <= 10) {
+      drawBox(pbox.x, pbox.y, pbox.w, pbox.h, "rgba(120,200,255,0.55)");
+    }
+    // 불꽃난무
+    const fbox = getFlameBox();
+    if (fbox) {
+      const flick = (player.flame % 4 < 2) ? "rgba(255,140,40,0.55)" : "rgba(255,90,30,0.45)";
+      drawBox(fbox.x, fbox.y, fbox.w, fbox.h, flick);
+    }
+
+    // ---- HUD ----
+    drawHUD();
+
+    // 게임오버
+    if (player.dead) {
+      ctx.fillStyle = "rgba(10,14,22,0.7)";
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = "#ff6a5a";
+      ctx.font = "bold 40px system-ui";
+      ctx.textAlign = "center";
+      ctx.fillText("탈로스 격파됨", W / 2, H / 2 - 10);
+      ctx.fillStyle = "#c8d2e0";
+      ctx.font = "18px system-ui";
+      ctx.fillText("R 키로 리스폰", W / 2, H / 2 + 28);
+      ctx.textAlign = "left";
+    }
+  }
+
+  function drawHUD() {
+    // 체력바
+    const bx = 18, by = 18, bw = 240, bh = 18;
+    drawBox(bx - 2, by - 2, bw + 4, bh + 4, "#0a0e16");
+    drawBox(bx, by, bw, bh, "#3a1414");
+    const hpRatio = player.hp / player.maxHp;
+    const hpCol = hpRatio > 0.5 ? "#3fd07a" : hpRatio > 0.25 ? "#e0c040" : "#e04040";
+    drawBox(bx, by, bw * hpRatio, bh, hpCol);
+    ctx.fillStyle = "#dfe8f5";
+    ctx.font = "12px system-ui";
+    ctx.textAlign = "left";
+    ctx.fillText("탈로스  HP " + Math.ceil(player.hp) + "/" + player.maxHp, bx + 6, by + 13);
+
+    // 상태 표시
+    ctx.fillStyle = player.combined ? "#7ab0ff" : "#ff9a6a";
+    ctx.font = "13px system-ui";
+    ctx.fillText(player.combined ? "결합 (강화 · 더블점프)" : "분리 (약화)", bx, by + 38);
+
+    // 선택 동물
+    ctx.fillStyle = "#9fb3d6";
+    ctx.fillText("루스 변신: " + ANIMALS[player.selectedAnimal].name +
+                 "  [1다람쥐 2늑대 3황소 4새]", bx, by + 58);
+
+    // 불꽃난무 쿨/상태
+    if (player.flame > 0) {
+      ctx.fillStyle = "#ffb060";
+      ctx.fillText("불꽃난무!", bx, by + 78);
+    }
+
+    // 적 잔여
+    const alive = enemies.filter(e => !e.dead).length;
+    ctx.fillStyle = "#c0c8d6";
+    ctx.textAlign = "right";
+    ctx.fillText("남은 적: " + alive, W - 18, 30);
+    ctx.textAlign = "left";
+  }
+
+  // ==========================================================================
+  // 13. 메인 루프
+  // ==========================================================================
+  function tick() {
+    updatePlayer();
+    updateLoose();
+    updatePlayerAttacks();
+    updateEnemies();
+    render();
+    // 엣지 입력 초기화(소비 안 된 것 정리)
+    for (const k in pressed) pressed[k] = false;
+    requestAnimationFrame(tick);
+  }
+
+  spawnEnemies();
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
